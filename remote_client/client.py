@@ -18,15 +18,11 @@ MARKERS = {
 }
 
 VALID_OPTS = list(range(1,len(list(MARKERS.keys()))+1))
-
 INSTR = '\n'.join([f"({num}) {marker}" for num, marker in zip(VALID_OPTS, MARKERS.keys())])
-
-
 
 # In bytes
 STATUS_LEN = 2
 TIME_LEN = 4
-
 QUEUE = []
 
 class Client:
@@ -40,10 +36,8 @@ class Client:
                 s.connect((HOST, PORT))
                 while 1:
                     arr1 = s.recv(STATUS_LEN)
-                    # print(f"arr1 {arr1!r}")
                     if arr1[0] == 38 and arr1[1] == 108:
                         arr2 = s.recv(436)
-                        # print(f"arr2 {arr2[-4:]!r}")
                         val = struct.unpack('f', arr2[-TIME_LEN:])[0]
                         fp.write(f'{val}\n')
                     else:
@@ -73,12 +67,8 @@ if __name__ =="__main__":
     t1 = threading.Thread(target=get_marker)
     t2 = threading.Thread(target=test.run)
  
-    # starting thread 1
     t1.start()
-    # starting thread 2
     t2.start()
  
-    # wait until thread 1 is completely executed
     t1.join()
-    # wait until thread 2 is completely executed
     t2.join()
