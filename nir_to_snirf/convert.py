@@ -73,7 +73,7 @@ PARSING = {
 MARKERS = list(PARSING.keys())
 
 
-def parse_nir(file: Path) -> Tuple[Dict, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+def parse_nir(file: Path, crop: int=0) -> Tuple[Dict, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     current_marker = 0
     all_data = []
 
@@ -86,6 +86,11 @@ def parse_nir(file: Path) -> Tuple[Dict, pl.DataFrame, pl.DataFrame, pl.DataFram
                 current_marker+=1
                 continue
             current_data.append(line)
+    if crop != 0:
+        adjusted = crop
+        if adjusted < 0:
+            adjusted = 0
+        all_data[3] = all_data[3].filter(pl.col('time') > adjusted)
     return tuple(all_data)
 
 
@@ -166,25 +171,45 @@ def add_measurment_list_2(data: h5py.Group):
     sources = [1,2,3,4]
     for detector in range(1,19):
         for wavelength in range(1,3):
-            print(f'source: {sources[((count-1)//8)%4]}')
             mEle = data.create_group(f"measurementList{count}")
             mEle.create_dataset('dataType', data=1, dtype=np.int32)
             mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
             mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
+            mEle.create_dataset('dataUnit', data='V')
             mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
             mEle.create_dataset('sourceIndex', data=sources[((count-1)//8)%4], dtype=np.int32)
             count += 1
 
 
-def convert(folder: Path):
-    nir_file = list(folder.glob('*.nir'))[0]
-    header, baseline, baseline_avgs, org_data = parse_nir(nir_file)
+def convert(folder: Path, crop:bool=True):
     ts_file = list(folder.glob('*.mrk'))[0]
     timestamps = parse_ts(ts_file)
+    bs_start = timestamps[251][0][0] - 5
+
+    nir_file = list(folder.glob('*.nir'))[0]
+    if crop:
+        header, baseline, baseline_avgs, org_data = parse_nir(nir_file, bs_start)
+    else:
+        header, baseline, baseline_avgs, org_data = parse_nir(nir_file)
+
+    if crop:
+        # Crop Timestamps
+        cropped = {}
+        for key, val in timestamps.items():
+            temp = []
+            for sample in val:
+                temp2 = sample
+                temp2[0] -= bs_start
+                temp.append(temp2)
+            cropped[key] = np.array(temp)
+
+        timestamps = cropped
 
     amb_col = [f'Optode_{x}_amb' for x in range(1, ((org_data.shape[1]-1)//3)+1)]
     ambient = org_data.select(amb_col)
     times = org_data.get_column('time').to_numpy()
+    if crop:
+        times -= bs_start
 
     # rewrite time bc mne
     times_new = np.linspace(0, len(times)*(0.1), int(len(times))+1)
@@ -194,6 +219,8 @@ def convert(folder: Path):
     org_data = org_data.drop(amb_col+['time'])
 
     output_file = folder / f'{folder.stem}.snirf'
+    # Convert mV to V (my assumption is that the output of the file is mV)
+    optodes_V = org_data.to_numpy() * 1e-3
 
     with h5py.File(output_file, 'w') as fp:
         fp.create_dataset('formatVersion', data='1.1')
@@ -215,7 +242,8 @@ def convert(folder: Path):
         # Initialize Data
         data = nirs.create_group('data1')
         data.create_dataset('time', data=times)
-        data.create_dataset('dataTimeSeries', data=org_data.to_numpy())
+
+        data.create_dataset('dataTimeSeries', data=optodes_V)
         # add_measurment_list(data)
         add_measurment_list_2(data)
 
@@ -254,22 +282,35 @@ def bulk_convert():
         count += 1
 
 
-def get_individual_sampling_rate(folder: Path):
+def get_individual_sampling_rate(folder: Path, crop:bool=True):
+    ts_file = list(folder.glob('*.mrk'))[0]
+    timestamps = parse_ts(ts_file)
+    bs_start = timestamps[251][0][0] - 5
+
     nir_file = list(folder.glob('*.nir'))[0]
-    _, _, _, org_data = parse_nir(nir_file)
-    time = org_data.get_column('time').to_numpy()
-    sum = 0
+    if crop:
+        _, _, _, org_data = parse_nir(nir_file, bs_start)
+        time = org_data.get_column('time').to_numpy()
+    else:
+        _, _, _, org_data = parse_nir(nir_file)
+        time = org_data.get_column('time').to_numpy() - bs_start
+    
+    samples = []
     count = 0
     while count+1 < len(time):
-        sum += 1 / (time[count+1] - time[count])
+        samples.append(1 / (time[count+1] - time[count]))
         count += 1
-    return sum / count
+    return pl.DataFrame({'subject':[folder.stem]*len(samples), 'rate (hz)':samples})
 
 
 def get_avg_sampling_rate():
+    results = []
     for subject in TARGET.iterdir():
         rate = get_individual_sampling_rate(subject)
-        print(f'Subject {subject.stem} avg sampling rate: {rate:.2f} hz')
+        # print(f'Subject {subject.stem} avg sampling rate: {rate:.2f} hz')
+        results.append(rate)
+    report = pl.concat(results)
+    print(report.describe())
 
 
 def get_snirfs():
@@ -292,8 +333,8 @@ def test():
 
 
 if __name__ =="__main__":
-    # get_avg_sampling_rate()
-    rm_snirfs()
-    bulk_convert()
-    get_snirfs()
+    get_avg_sampling_rate()
+    # rm_snirfs()
+    # bulk_convert()
+    # get_snirfs()
     # test()
