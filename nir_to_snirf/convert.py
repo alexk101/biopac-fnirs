@@ -6,12 +6,10 @@ import polars as pl
 from snirf import Snirf
 import os
 import h5py
+from shutil import copy
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(dir_path)
-
-TEST = Path()
-FILENAME = 'test.snirf'
 
 TS_MARKERS = {
     252: 251,
@@ -19,8 +17,8 @@ TS_MARKERS = {
     4: 3
 }
 TS_START = list(TS_MARKERS.values())
-TARGET = Path('sample_data').resolve()
-
+TARGET = Path('fnirs-pilot-data').resolve()
+OUTPUT = Path('pilot-snirfs').resolve()
 
 def parse_header(data: List[str]):
     output = {}
@@ -30,7 +28,10 @@ def parse_header(data: List[str]):
     temp = time[2].split('.')
     temp2 = temp[1].split(' ')
     time[2] = '.'.join([temp[0], temp2[0].ljust(6,'0')+' '+temp2[1]])
-    time = ':'.join(time[:2] + ['0'+time[2]])
+    if len(time[2]) < 2:
+        time = ':'.join(time[:2] + ['0'+time[2]])
+    else:
+        time = ':'.join(time)
     output['start_time'] = datetime.strptime(time, '%a %b %d %H:%M:%S.%f %Y')
     output['start_code'] = np.array(data_cleaned[3].split(':')[1].split('\t')[1:]).astype(float)
     output['freq_code'] = float(data_cleaned[4].split(':')[1].strip())
@@ -128,6 +129,53 @@ def get_posititions():
     return detectors, sources
 
 
+def add_measurment_list(data: h5py.Group):
+    start = 1
+    count = 1
+    # Initialize Source -> Detector for optodes in MeasurementList
+    for source in range(1,5):
+        for detector in range(start,4+start):
+            for wavelength in range(1,3):
+                mEle = data.create_group(f"measurementList{count}")
+                mEle.create_dataset('dataType', data=1, dtype=np.int32)
+                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
+                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
+                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
+                mEle.create_dataset('sourceIndex', data=source, dtype=np.int32)
+                count += 1
+            start += 2
+
+    # Add Extra Reference Optodes
+    sources = [1,4]
+    for detector in range(11,13):
+        for x in range(1,2):
+            for wavelength in range(1,3):
+                mEle = data.create_group(f"measurementList{count}")
+                mEle.create_dataset('dataType', data=1, dtype=np.int32)
+                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
+                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
+                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
+                mEle.create_dataset('sourceIndex', data=sources[detector-11], dtype=np.int32)
+                count += 1
+
+
+def add_measurment_list_2(data: h5py.Group):
+    start = 1
+    count = 1
+    # Add Extra Reference Optodes
+    sources = [1,2,3,4]
+    for detector in range(1,19):
+        for x in range(1,2):
+            for wavelength in range(1,3):
+                mEle = data.create_group(f"measurementList{count}")
+                mEle.create_dataset('dataType', data=1, dtype=np.int32)
+                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
+                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
+                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
+                mEle.create_dataset('sourceIndex', data=sources[(detector//4)%4], dtype=np.int32)
+                count += 1
+
+
 def convert(folder: Path):
     nir_file = list(folder.glob('*.nir'))[0]
     header, baseline, baseline_avgs, org_data = parse_nir(nir_file)
@@ -137,6 +185,12 @@ def convert(folder: Path):
     amb_col = [f'Optode_{x}_amb' for x in range(1, ((org_data.shape[1]-1)//3)+1)]
     ambient = org_data.select(amb_col)
     times = org_data.get_column('time').to_numpy()
+
+    # rewrite time bc mne
+    times_new = np.linspace(0, len(times)*(0.1), int(len(times))+1)
+    print(f"time compensation has caused of drift of: {times[-1]-times_new[-1]:.2f}s from the original time scale")
+    times = times_new
+
     org_data = org_data.drop(amb_col+['time'])
 
     output_file = folder / f'{folder.stem}.snirf'
@@ -159,40 +213,15 @@ def convert(folder: Path):
                 meta.create_dataset(key, data=val)
 
         # Initialize Data
-        data = nirs.create_group('data')
+        data = nirs.create_group('data1')
         data.create_dataset('time', data=times)
         data.create_dataset('dataTimeSeries', data=org_data.to_numpy())
-        start = 1
-        count = 1
-        # Initialize Source -> Detector for optodes in MeasurementList
-        for source in range(1,5):
-            for detector in range(start,4+start):
-                for wavelength in range(1,3):
-                    mEle = data.create_group(f"measurementList{count}")
-                    mEle.create_dataset('dataType', data=1, dtype=np.int32)
-                    mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-                    mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-                    mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-                    mEle.create_dataset('sourceIndex', data=source, dtype=np.int32)
-                    count += 1
-                start += 2
-
-        # Add Extra Reference Optodes
-        sources = [1,4]
-        for detector in range(11,13):
-            for x in range(1,2):
-                for wavelength in range(1,3):
-                    mEle = data.create_group(f"measurementList{count}")
-                    mEle.create_dataset('dataType', data=1, dtype=np.int32)
-                    mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-                    mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-                    mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-                    mEle.create_dataset('sourceIndex', data=sources[detector-11], dtype=np.int32)
-                    count += 1
+        # add_measurment_list(data)
+        add_measurment_list_2(data)
 
         # Initialize Probe
         probe = nirs.create_group('probe')
-        probe.create_dataset('detectorLabels', data=[f'D{x}' for x in range(1,11)])
+        probe.create_dataset('detectorLabels', data=[f'D{x}' for x in range(1,13)])
         probe.create_dataset('sourceLabels', data=[f'S{x}' for x in range(1,5)])
         probe.create_dataset('wavelengths', data=np.array([730,850]).astype(float))
         detectors, sources = get_posititions()
@@ -217,9 +246,54 @@ def bulk_convert():
     print(f'Converting {total_subs} subjects to the snirf format...')
     count = 1
     for subject in TARGET.iterdir():
-        convert(subject)
-        print(f'Converted subject {subject.stem} {count}/{total_subs}')
+        if not (subject / f'{subject.stem}.snirf').exists():
+            convert(subject)
+            print(f'Converted subject {subject.stem} {count}/{total_subs}')
+        else:
+            print(f'Subject {subject.stem} already converted {count}/{total_subs}')
         count += 1
 
+
+def get_individual_sampling_rate(folder: Path):
+    nir_file = list(folder.glob('*.nir'))[0]
+    _, _, _, org_data = parse_nir(nir_file)
+    time = org_data.get_column('time').to_numpy()
+    sum = 0
+    count = 0
+    while count+1 < len(time):
+        sum += 1 / (time[count+1] - time[count])
+        count += 1
+    return sum / count
+
+
+def get_avg_sampling_rate():
+    for subject in TARGET.iterdir():
+        rate = get_individual_sampling_rate(subject)
+        print(f'Subject {subject.stem} avg sampling rate: {rate:.2f} hz')
+
+
+def get_snirfs():
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    for subject in TARGET.iterdir():
+        snirf_path = list(subject.glob('*.snirf'))[0]
+        copy(snirf_path, OUTPUT)
+
+
+def rm_snirfs():
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    for subject in TARGET.iterdir():
+        if list(subject.glob('*.snirf')):
+            snirf_path = list(subject.glob('*.snirf'))[0]
+            os.remove(str(snirf_path))
+
+def test():
+    snirf = Snirf('pilot-snirfs/macie_no_eyetracking.snirf')
+    print(snirf.nirs[0].probe)
+
+
 if __name__ =="__main__":
-    bulk_convert()
+    get_avg_sampling_rate()
+    # rm_snirfs()
+    # bulk_convert()
+    # get_snirfs()
+    # test()

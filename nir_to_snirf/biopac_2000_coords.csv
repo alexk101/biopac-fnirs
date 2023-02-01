@@ -13,4 +13,11 @@ detector_8,3.76,1,2
 source_4,3.37,1.5,2.5
 detector_9,2.79,2,3
 detector_10,3.33,2,2
-
+detector_ref_11,3.47,1.25,2.5
+detector_ref_12,3.47,-1.25,2.5
+detector_11,2.79,-2,3
+detector_12,3.3,-2,2
+detector_13,3.28,-1,3
+detector_14,3.76,-1,2
+detector_15,3.28,-1,3
+detector_16,3.76,-1,2
