@@ -165,15 +165,15 @@ def add_measurment_list_2(data: h5py.Group):
     # Add Extra Reference Optodes
     sources = [1,2,3,4]
     for detector in range(1,19):
-        for x in range(1,2):
-            for wavelength in range(1,3):
-                mEle = data.create_group(f"measurementList{count}")
-                mEle.create_dataset('dataType', data=1, dtype=np.int32)
-                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-                mEle.create_dataset('sourceIndex', data=sources[(detector//4)%4], dtype=np.int32)
-                count += 1
+        for wavelength in range(1,3):
+            print(f'source: {sources[((count-1)//8)%4]}')
+            mEle = data.create_group(f"measurementList{count}")
+            mEle.create_dataset('dataType', data=1, dtype=np.int32)
+            mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
+            mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
+            mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
+            mEle.create_dataset('sourceIndex', data=sources[((count-1)//8)%4], dtype=np.int32)
+            count += 1
 
 
 def convert(folder: Path):
@@ -292,8 +292,8 @@ def test():
 
 
 if __name__ =="__main__":
-    get_avg_sampling_rate()
-    # rm_snirfs()
-    # bulk_convert()
-    # get_snirfs()
+    # get_avg_sampling_rate()
+    rm_snirfs()
+    bulk_convert()
+    get_snirfs()
     # test()
