@@ -7,6 +7,9 @@ from snirf import Snirf
 import os
 import h5py
 from shutil import copy
+import matplotlib.pyplot as plt
+import scipy.interpolate as interp
+from numpy.polynomial.polynomial import Polynomial
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(dir_path)
@@ -207,16 +210,18 @@ def convert(folder: Path, crop:bool=True):
 
     amb_col = [f'Optode_{x}_amb' for x in range(1, ((org_data.shape[1]-1)//3)+1)]
     ambient = org_data.select(amb_col)
-    times = org_data.get_column('time').to_numpy()
+    old_time = org_data.get_column('time').to_numpy().copy()
     if crop:
-        times -= bs_start
+        old_time -= bs_start
+    org_data.drop_in_place('time')
+    time = np.linspace(0, (len(old_time)-1)*(0.1), int(len(old_time)))
 
-    # rewrite time bc mne
-    times_new = np.linspace(0, len(times)*(0.1), int(len(times))+1)
-    print(f"time compensation has caused of drift of: {times[-1]-times_new[-1]:.2f}s from the original time scale")
-    times = times_new
+    for column in org_data.columns:
+        spline = interp.make_interp_spline(time, org_data[column], k=3)
+        org_data.replace(column, pl.Series(spline(time)))
 
-    org_data = org_data.drop(amb_col+['time'])
+    # Ignore ambient columns for now
+    org_data = org_data.drop(amb_col)
 
     output_file = folder / f'{folder.stem}.snirf'
     # Convert mV to V (my assumption is that the output of the file is mV)
@@ -228,20 +233,20 @@ def convert(folder: Path, crop:bool=True):
         
         # Initialize Metadata
         meta = nirs.create_group("metaDataTags")
-        time = header.pop('start_time')
+        start_time = header.pop('start_time')
         meta.create_dataset("FrequencyUnit", data = 'Hz')
         meta.create_dataset("LengthUnit", data = 'm')
         meta.create_dataset("TimeUnit", data = 's')
         meta.create_dataset("SubjectID", data = 'temp')
-        meta.create_dataset('MeasurementDate', data=datetime.strftime(time, '%Y-%m-%d'))
-        meta.create_dataset('MeasurementTime', data=datetime.strftime(time, '%X'))
+        meta.create_dataset('MeasurementDate', data=datetime.strftime(start_time, '%Y-%m-%d'))
+        meta.create_dataset('MeasurementTime', data=datetime.strftime(start_time, '%X'))
         for key, val in header.items():
             if val is not None:
                 meta.create_dataset(key, data=val)
 
         # Initialize Data
         data = nirs.create_group('data1')
-        data.create_dataset('time', data=times)
+        data.create_dataset('time', data=time)
 
         data.create_dataset('dataTimeSeries', data=optodes_V)
         # add_measurment_list(data)
@@ -282,6 +287,84 @@ def bulk_convert():
         count += 1
 
 
+def analyze_interpolation(folder: Path, crop: bool=True):
+    ts_file = list(folder.glob('*.mrk'))[0]
+    timestamps = parse_ts(ts_file)
+    bs_start = timestamps[251][0][0] - 5
+
+    nir_file = list(folder.glob('*.nir'))[0]
+    if crop:
+        _, _, _, org_data = parse_nir(nir_file, bs_start)
+        time = org_data.get_column('time').to_numpy() -bs_start
+        org_data.drop_in_place('time')
+    else:
+        _, _, _, org_data = parse_nir(nir_file)
+        time = org_data.get_column('time').to_numpy() - bs_start
+        org_data.drop_in_place('time')
+
+    opt_1_730 = org_data[org_data.columns[0]].to_numpy()
+
+    
+    times_new = np.linspace(0, len(time)*(0.1), int(len(time))+1)
+    plt.plot(list(range(len(times_new))), times_new)
+    plt.savefig('bruh.png')
+    
+    fig, axes = plt.subplots(1,1, figsize=(15,5))
+    axes.plot(time,opt_1_730, label='org')
+
+    bspl = interp.make_interp_spline(time, opt_1_730, k=3)
+    print(bspl(times_new))
+
+    axes.plot(times_new, bspl(times_new), label='interp')
+    axes.legend()
+
+    fig.savefig('interpolation_ex.png')
+
+
+def analyze_linearity(folder: Path, crop: bool=True):
+    ts_file = list(folder.glob('*.mrk'))[0]
+    timestamps = parse_ts(ts_file)
+    bs_start = timestamps[251][0][0] - 5
+
+    nir_file = list(folder.glob('*.nir'))[0]
+    if crop:
+        _, _, _, org_data = parse_nir(nir_file, bs_start)
+        time = org_data.get_column('time').to_numpy() - bs_start
+        org_data.drop_in_place('time')
+    else:
+        _, _, _, org_data = parse_nir(nir_file)
+        time = org_data.get_column('time').to_numpy()
+        org_data.drop_in_place('time')
+
+    # fig, axes = plt.subplots(len(org_data.columns),1, figsize=(17,25))
+    # for ind, column in enumerate(org_data.columns):
+    #     axes[ind].plot(time, org_data[column])
+    # fig.savefig('all_data.png')
+
+    # print(org_data.columns)
+    data_good = org_data[org_data.columns[0]].to_numpy()
+    data_bad = org_data[org_data.columns[14]].to_numpy()
+
+    good_m, good_b = np.polyfit(time, data_good, deg=1) # type: ignore
+    bad_m, bad_b = np.polyfit(time, data_bad, deg=1) # type: ignore
+
+    good_l = np.array([(x*good_m)+good_b for x in time])
+    bad_l = np.array([(x*bad_m)+bad_b for x in time])
+
+    err_good = np.abs(good_l - data_good).mean()
+    err_bad = np.abs(bad_l - data_bad).mean()
+    print(f'bad error: {err_bad}, good error: {err_good}')
+
+    fig, axes = plt.subplots(2,1)
+    axes[0].plot(time,good_l, label='linear fit - good data')
+    axes[0].plot(time,data_good, label='orignal data - good data')
+    axes[0].legend()
+    axes[1].plot(time,bad_l, label='linear fit - bad data')
+    axes[1].plot(time,data_bad, label='orignal data - bad data')
+    axes[1].legend()
+    fig.tight_layout()
+    fig.savefig('linearity.png')
+
 def get_individual_sampling_rate(folder: Path, crop:bool=True):
     ts_file = list(folder.glob('*.mrk'))[0]
     timestamps = parse_ts(ts_file)
@@ -293,8 +376,7 @@ def get_individual_sampling_rate(folder: Path, crop:bool=True):
         time = org_data.get_column('time').to_numpy()
     else:
         _, _, _, org_data = parse_nir(nir_file)
-        time = org_data.get_column('time').to_numpy() - bs_start
-    
+        time = org_data.get_column('time').to_numpy()
     samples = []
     count = 0
     while count+1 < len(time):
@@ -309,6 +391,14 @@ def get_avg_sampling_rate():
         rate = get_individual_sampling_rate(subject)
         # print(f'Subject {subject.stem} avg sampling rate: {rate:.2f} hz')
         results.append(rate)
+
+    out_path = Path('variability')
+    out_path.mkdir(parents=True, exist_ok=True)
+    for subject in results:
+        fig, axes = plt.subplots(1,1)
+        axes.plot(list(range(len(subject.rows()))), subject['rate (hz)'])
+        name = f"{list(set(subject['subject']))[0]}_variability.png"
+        fig.savefig(str(out_path / name))
     report = pl.concat(results)
     print(report.describe())
 
@@ -327,13 +417,11 @@ def rm_snirfs():
             snirf_path = list(subject.glob('*.snirf'))[0]
             os.remove(str(snirf_path))
 
-def test():
-    snirf = Snirf('pilot-snirfs/macie_no_eyetracking.snirf')
-    print(snirf.nirs[0].probe)
-
 
 if __name__ =="__main__":
-    get_avg_sampling_rate()
+    analyze_linearity(Path('fnirs-pilot-data/allison_no_eyetracking'))
+    # get_avg_sampling_rate()
+    # analyze_interpolation(Path('fnirs-pilot-data/alex_no_eyetracking'))
     # rm_snirfs()
     # bulk_convert()
     # get_snirfs()
