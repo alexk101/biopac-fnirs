@@ -9,7 +9,6 @@ import h5py
 from shutil import copy
 import matplotlib.pyplot as plt
 import scipy.interpolate as interp
-from numpy.polynomial.polynomial import Polynomial
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(dir_path)
@@ -123,7 +122,7 @@ def parse_ts(file: Path):
 
 
 def get_posititions():
-    data_path = Path('biopac_2000_coords.csv').resolve()
+    data_path = Path('../location/biopac_2000_coords.csv').resolve()
     data = pl.read_csv(data_path)
     data = data.with_columns(
         [
@@ -132,56 +131,62 @@ def get_posititions():
             pl.col('z') / 100,
         ]
     )
-    detectors = data.filter(pl.col('label').str.contains('detector')).drop('label').to_numpy()
-    sources = data.filter(pl.col('label').str.contains('source')).drop('label').to_numpy()
-    return detectors, sources
+    detectors = data.filter(pl.col('label').str.starts_with('O')).drop('label')
+    sources = data.filter(pl.col('label').str.starts_with('S')).drop('label').to_numpy()
+    reference = data.filter(pl.col('label').str.starts_with('R')).drop('label')
+
+    all_detectors = pl.concat([detectors, reference])
+    return all_detectors.to_numpy(), sources
 
 
-def add_measurment_list(data: h5py.Group):
+def debug_add(data, dtype , mEle: h5py.Group, name: str):
+    dbug = {'name': name, 'data': data}
+    mEle.create_dataset(name, data=data, dtype=dtype)
+    return dbug
+
+def add_measurment_list(data: h5py.Group, debug: bool=True):
     start = 1
     count = 1
+    dbug = []
+
     # Initialize Source -> Detector for optodes in MeasurementList
     for source in range(1,5):
         for detector in range(start,4+start):
             for wavelength in range(1,3):
+                cur_list = f"measurementList{count}"
+                m_list = {cur_list: []}
                 mEle = data.create_group(f"measurementList{count}")
-                mEle.create_dataset('dataType', data=1, dtype=np.int32)
-                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-                mEle.create_dataset('sourceIndex', data=source, dtype=np.int32)
+                m_list[cur_list].append(debug_add(1, np.int32, mEle, 'dataType'))
+                m_list[cur_list].append(debug_add(1, np.int32, mEle, 'dataTypeIndex'))
+                m_list[cur_list].append(debug_add(wavelength, np.int32, mEle, 'wavelengthIndex'))
+                m_list[cur_list].append(debug_add(detector, np.int32, mEle, 'detectorIndex'))
+                m_list[cur_list].append(debug_add(source, np.int32, mEle, 'sourceIndex'))
                 count += 1
-            start += 2
+                dbug.append(m_list)
+        start += 2
 
     # Add Extra Reference Optodes
     sources = [1,4]
     for detector in range(11,13):
         for x in range(1,2):
             for wavelength in range(1,3):
+                cur_list = f"measurementList{count}"
+                m_list = {cur_list: []}
                 mEle = data.create_group(f"measurementList{count}")
-                mEle.create_dataset('dataType', data=1, dtype=np.int32)
-                mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-                mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-                mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-                mEle.create_dataset('sourceIndex', data=sources[detector-11], dtype=np.int32)
+                m_list[cur_list].append(debug_add(1, np.int32, mEle, 'dataType'))
+                m_list[cur_list].append(debug_add(1, np.int32, mEle, 'dataTypeIndex'))
+                m_list[cur_list].append(debug_add(wavelength, np.int32, mEle, 'wavelengthIndex'))
+                m_list[cur_list].append(debug_add(detector, np.int32, mEle, 'detectorIndex'))
+                m_list[cur_list].append(debug_add(sources[detector-11], np.int32, mEle, 'sourceIndex'))
                 count += 1
+                dbug.append(m_list)
 
-
-def add_measurment_list_2(data: h5py.Group):
-    start = 1
-    count = 1
-    # Add Extra Reference Optodes
-    sources = [1,2,3,4]
-    for detector in range(1,19):
-        for wavelength in range(1,3):
-            mEle = data.create_group(f"measurementList{count}")
-            mEle.create_dataset('dataType', data=1, dtype=np.int32)
-            mEle.create_dataset('dataTypeIndex', data=1, dtype=np.int32)
-            mEle.create_dataset('wavelengthIndex', data=wavelength, dtype=np.int32)
-            mEle.create_dataset('dataUnit', data='V')
-            mEle.create_dataset('detectorIndex', data=detector, dtype=np.int32)
-            mEle.create_dataset('sourceIndex', data=sources[((count-1)//8)%4], dtype=np.int32)
-            count += 1
+    if debug:
+        for mlist in dbug:
+            for key, val in mlist.items():
+                print(f'{key}')
+                for mele in val:
+                    print(f'\t{mele}')
 
 
 def convert(folder: Path, crop:bool=True):
@@ -191,9 +196,9 @@ def convert(folder: Path, crop:bool=True):
 
     nir_file = list(folder.glob('*.nir'))[0]
     if crop:
-        header, baseline, baseline_avgs, org_data = parse_nir(nir_file, bs_start)
+        header, _, _, org_data = parse_nir(nir_file, bs_start)
     else:
-        header, baseline, baseline_avgs, org_data = parse_nir(nir_file)
+        header, _, _, org_data = parse_nir(nir_file)
 
     if crop:
         # Crop Timestamps
@@ -250,7 +255,7 @@ def convert(folder: Path, crop:bool=True):
 
         data.create_dataset('dataTimeSeries', data=optodes_V)
         # add_measurment_list(data)
-        add_measurment_list_2(data)
+        add_measurment_list(data)
 
         # Initialize Probe
         probe = nirs.create_group('probe')
@@ -258,6 +263,7 @@ def convert(folder: Path, crop:bool=True):
         probe.create_dataset('sourceLabels', data=[f'S{x}' for x in range(1,5)])
         probe.create_dataset('wavelengths', data=np.array([730,850]).astype(float))
         detectors, sources = get_posititions()
+
         probe.create_dataset('detectorPos3D', data=detectors)
         probe.create_dataset('sourcePos3D', data=sources)
 
@@ -419,10 +425,10 @@ def rm_snirfs():
 
 
 if __name__ =="__main__":
-    analyze_linearity(Path('fnirs-pilot-data/allison_no_eyetracking'))
+    # analyze_linearity(Path('fnirs-pilot-data/allison_no_eyetracking'))
     # get_avg_sampling_rate()
     # analyze_interpolation(Path('fnirs-pilot-data/alex_no_eyetracking'))
-    # rm_snirfs()
-    # bulk_convert()
-    # get_snirfs()
+    rm_snirfs()
+    bulk_convert()
+    get_snirfs()
     # test()
