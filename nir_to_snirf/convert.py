@@ -7,11 +7,15 @@ from snirf import Snirf
 import os
 import h5py
 from shutil import copy
+from mpl_toolkits import mplot3d
 import matplotlib.pyplot as plt
 import scipy.interpolate as interp
+import transformations as trs
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(dir_path)
+
+origin, xaxis, yaxis, zaxis = [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]
 
 TS_MARKERS = {
     252: 251,
@@ -121,9 +125,38 @@ def parse_ts(file: Path):
     return dict(zip(TS_MARKERS.values(), output))
 
 
-def get_posititions():
+def parabola_deform(data: pl.DataFrame):
+    # parabola deformation * attenuation factor + y 
+    output = data.with_columns([((((pl.col('x')**2)/-8)+((pl.col('y')**2)/15)) * ((-(pl.col('x')*0.09).cos()**2)+1) + 1 + pl.col('y')).alias('y_def')])
+    output = output.drop('y').rename({'y_def': 'y'})
+    return output
+
+
+def rotate_frame(data: pl.DataFrame, theta: float = -0.2):
+    temp = data.select([pl.col('x'), pl.col('y'), pl.col('z')]).with_column(pl.Series('w', np.zeros(data.height))).to_numpy()
+    Rz = trs.rotation_matrix(theta, xaxis)
+    output = []
+    # print(temp)
+    for point in temp:
+        val = point@Rz
+        output.append(val)
+    output = np.array(output).T
+    output = pl.DataFrame({'label': data['label'], 'x': output[0], 'y': output[1], 'z': output[2]})
+    return output
+
+def prefrontal_cortex_map(data: pl.DataFrame):
+    data = parabola_deform(data)
+    data = rotate_frame(data)
+    data = data.with_column(pl.col('y') + 11)
+    data = data.with_column(pl.col('z') + 6)
+    return data
+
+
+def get_posititions(debug: bool=False):
     data_path = Path('../location/biopac_2000_coords.csv').resolve()
     data = pl.read_csv(data_path)
+    data = prefrontal_cortex_map(data) 
+
     data = data.with_columns(
         [
             pl.col('x') / 100,
@@ -132,14 +165,27 @@ def get_posititions():
         ]
     )
     detectors = data.filter(pl.col('label').str.starts_with('O')).drop('label')
-    sources = data.filter(pl.col('label').str.starts_with('S')).drop('label').to_numpy()
+    sources = data.filter(pl.col('label').str.starts_with('S')).drop('label')
     reference = data.filter(pl.col('label').str.starts_with('R')).drop('label')
+    data = {'detectors':detectors, 'sources':sources, 'reference':reference}
+
+    if debug:
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+
+        for key,val in data.items():
+            ax.scatter(val['x'], val['y'], val['z'], label=key)
+
+        ax.set_xlim(-0.2,0.2)
+        ax.set_ylim(-0.2,0.2)
+        ax.set_zlim(-0.2,0.2)
+        plt.show(block=True)
 
     all_detectors = pl.concat([detectors, reference])
-    return all_detectors.to_numpy(), sources
+    return all_detectors.to_numpy(), sources.to_numpy()
 
 
-def debug_add(data, dtype , mEle: h5py.Group, name: str):
+def debug_add(data, dtype, mEle: h5py.Group, name: str):
     dbug = {'name': name, 'data': data}
     mEle.create_dataset(name, data=data, dtype=dtype)
     return dbug
@@ -189,7 +235,7 @@ def add_measurment_list(data: h5py.Group, debug: bool=True):
                     print(f'\t{mele}')
 
 
-def convert(folder: Path, crop:bool=True):
+def convert(folder: Path, crop: bool=True, debug: bool=False):
     ts_file = list(folder.glob('*.mrk'))[0]
     timestamps = parse_ts(ts_file)
     bs_start = timestamps[251][0][0] - 5
@@ -254,15 +300,14 @@ def convert(folder: Path, crop:bool=True):
         data.create_dataset('time', data=time)
 
         data.create_dataset('dataTimeSeries', data=optodes_V)
-        # add_measurment_list(data)
-        add_measurment_list(data)
+        add_measurment_list(data, False)
 
         # Initialize Probe
         probe = nirs.create_group('probe')
         probe.create_dataset('detectorLabels', data=[f'D{x}' for x in range(1,13)])
         probe.create_dataset('sourceLabels', data=[f'S{x}' for x in range(1,5)])
         probe.create_dataset('wavelengths', data=np.array([730,850]).astype(float))
-        detectors, sources = get_posititions()
+        detectors, sources = get_posititions(debug)
 
         probe.create_dataset('detectorPos3D', data=detectors)
         probe.create_dataset('sourcePos3D', data=sources)
@@ -280,17 +325,18 @@ def convert(folder: Path, crop:bool=True):
     assert validate.is_valid
 
 
-def bulk_convert():
+def bulk_convert(debug: bool=False):
     total_subs = len(list(TARGET.iterdir()))
     print(f'Converting {total_subs} subjects to the snirf format...')
-    count = 1
-    for subject in TARGET.iterdir():
+    for ind, subject in enumerate(TARGET.iterdir()):
         if not (subject / f'{subject.stem}.snirf').exists():
-            convert(subject)
-            print(f'Converted subject {subject.stem} {count}/{total_subs}')
+            if (ind == total_subs-1):
+                convert(subject, debug=debug)
+            else:
+                convert(subject)
+            print(f'Converted subject {subject.stem} {ind+1}/{total_subs}')
         else:
-            print(f'Subject {subject.stem} already converted {count}/{total_subs}')
-        count += 1
+            print(f'Subject {subject.stem} already converted {ind+1}/{total_subs}')
 
 
 def analyze_interpolation(folder: Path, crop: bool=True):
