@@ -10,6 +10,7 @@ from shutil import copy
 from mpl_toolkits import mplot3d
 import matplotlib.pyplot as plt
 import scipy.interpolate as interp
+from scipy.optimize import fsolve, root
 import transformations as trs
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
@@ -125,11 +126,71 @@ def parse_ts(file: Path):
     return dict(zip(TS_MARKERS.values(), output))
 
 
-def parabola_deform(data: pl.DataFrame):
-    # parabola deformation * attenuation factor + y 
-    output = data.with_columns([((((pl.col('x')**2)/-8)+((pl.col('y')**2)/15)) * ((-(pl.col('x')*0.09).cos()**2)+1) + 1 + pl.col('y')).alias('y_def')])
-    output = output.drop('y').rename({'y_def': 'y'})
-    return output
+def constraint(p, data):
+    x_c, y_c, radius = data
+    # print(f'x_c: {x_c}, y_c: {y_c}')
+    x, y = p
+    # print(f'x: {x}, y: {y}')
+    return (((x-x_c)**2 + (y-y_c)**2)-(radius**2), (x**2/-10)-y)
+
+
+def parabola_deform(data: pl.DataFrame, debug:bool=False):
+    detectors = data.filter(pl.col('label').str.starts_with('O'))
+    sources = data.filter(pl.col('label').str.starts_with('S'))
+    ref = data.filter(pl.col('label').str.starts_with('R'))
+    all_data = {'detectors':detectors, 'sources':sources, 'ref':ref}
+
+    # sort ascending so that we draw the circles one after another, starting from 0
+    detector_x_pos = detectors.filter(pl.col('x') > 0).unique(subset='x').sort(by='x')['x'].to_numpy()
+
+    points = {'sources': [], 'detectors': [], 'ref': []}
+
+    prev_pos = [0,0]
+    for ind, x in enumerate(detector_x_pos):
+        if ind == len(detector_x_pos)-1:
+            out = fsolve(constraint, [x,0], args=prev_pos+[1.125])
+            points['ref'].append(out)
+        # source
+        out = fsolve(constraint, [x,0], args=prev_pos+[2.25])
+        points['sources'].append(out)
+
+        # detector
+        out = fsolve(constraint, [x,0], args=prev_pos+[4.5])
+        prev_pos = list(out)
+        points['detectors'].append(out)
+        points['detectors'].append(out)
+    points['detectors']
+
+    for key in points.keys():
+        bruh = list(reversed(points[key]))
+        if key == 'detectors':
+            bruh.append(np.array([0.0,0.0]))
+
+        bruh_2 = [[-x,y] for x,y in reversed(bruh)]
+        new_arr = np.array(list(reversed(bruh + bruh_2)))
+        # new_arr.sort(axis=0)
+        points[key] = new_arr
+
+    if debug:
+        for key, val in points.items():
+            print(key)
+            print(val)
+            plt.scatter(val.T[0], val.T[1], label=key)
+        plt.xlim(-10,10)
+        plt.ylim(-10,10)
+        plt.legend()
+        plt.savefig('distribution.png')
+
+    for key in all_data.keys():
+        print(f"1: {all_data[key].sort('x')['x'].to_numpy()}")
+        bruh = points[key].T[0]
+        print(f"2: {bruh}")
+
+        all_data[key] = all_data[key].replace('x', pl.Series(points[key].T[0]))
+        all_data[key] = all_data[key].replace('y', pl.Series(points[key].T[1]))
+
+    all_data = pl.concat(list(all_data.values()))
+    return all_data
 
 
 def rotate_frame(data: pl.DataFrame, theta: float = -0.2):
@@ -144,10 +205,10 @@ def rotate_frame(data: pl.DataFrame, theta: float = -0.2):
     output = pl.DataFrame({'label': data['label'], 'x': output[0], 'y': output[1], 'z': output[2]})
     return output
 
-def prefrontal_cortex_map(data: pl.DataFrame):
-    data = parabola_deform(data)
+def prefrontal_cortex_map(data: pl.DataFrame, debug:bool=False):
+    data = parabola_deform(data, debug=debug)
     data = rotate_frame(data)
-    data = data.with_column(pl.col('y') + 11)
+    data = data.with_column(pl.col('y') + 12.5)
     data = data.with_column(pl.col('z') + 6)
     return data
 
@@ -155,7 +216,7 @@ def prefrontal_cortex_map(data: pl.DataFrame):
 def get_posititions(debug: bool=False):
     data_path = Path('../location/biopac_2000_coords.csv').resolve()
     data = pl.read_csv(data_path)
-    data = prefrontal_cortex_map(data) 
+    data = prefrontal_cortex_map(data, debug)
 
     data = data.with_columns(
         [
@@ -475,6 +536,6 @@ if __name__ =="__main__":
     # get_avg_sampling_rate()
     # analyze_interpolation(Path('fnirs-pilot-data/alex_no_eyetracking'))
     rm_snirfs()
-    bulk_convert()
+    bulk_convert(True)
     get_snirfs()
     # test()
