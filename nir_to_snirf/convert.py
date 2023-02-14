@@ -10,22 +10,32 @@ from shutil import copy
 from mpl_toolkits import mplot3d
 import matplotlib.pyplot as plt
 import scipy.interpolate as interp
-from scipy.optimize import fsolve, root
+from scipy.optimize import fsolve
 import transformations as trs
+import yaml
 
 dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(dir_path)
 
 origin, xaxis, yaxis, zaxis = [0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]
 
-TS_MARKERS = {
-    252: 251,
-    2: 1,
-    4: 3
-}
-TS_START = list(TS_MARKERS.values())
-TARGET = Path('fnirs-pilot-data').resolve()
-OUTPUT = Path('pilot-snirfs').resolve()
+TS_MARKERS = {}
+TS_START = []
+TARGET = Path('./data/similarity/sim-pilot-data').resolve()
+OUTPUT = TARGET.parent / 'snirfs'
+
+
+def parse_config():
+    global TS_START, TS_MARKERS
+    with open(TARGET.parent / 'config.yml', 'r') as fp:
+        config = yaml.safe_load(fp)
+        stimuli = config['stimuli']
+        print(f'Found marker config mapping:')
+        for key, val in stimuli.items():
+            TS_MARKERS[val['end']] = val['start']
+            print(f"{val['end']}: {val['start']}")
+        TS_START = list(TS_MARKERS.values())
+
 
 def parse_header(data: List[str]):
     output = {}
@@ -169,25 +179,26 @@ def parabola_deform(data: pl.DataFrame, debug:bool=False):
         bruh_2 = [[-x,y] for x,y in reversed(bruh)]
         new_arr = np.array(list(reversed(bruh + bruh_2)))
         # new_arr.sort(axis=0)
-        points[key] = new_arr
+        points[key] = new_arr # type: ignore
 
     if debug:
         for key, val in points.items():
             print(key)
             print(val)
-            plt.scatter(val.T[0], val.T[1], label=key)
+            plt.scatter(val.T[0], val.T[1], label=key) # type: ignore
         plt.xlim(-10,10)
         plt.ylim(-10,10)
         plt.legend()
         plt.savefig('distribution.png')
 
     for key in all_data.keys():
-        print(f"1: {all_data[key].sort('x')['x'].to_numpy()}")
-        bruh = points[key].T[0]
-        print(f"2: {bruh}")
+        bruh = points[key].T[0] # type: ignore
+        if debug:
+            print(f"1: {all_data[key].sort('x')['x'].to_numpy()}")
+            print(f"2: {bruh}")
 
-        all_data[key] = all_data[key].replace('x', pl.Series(points[key].T[0]))
-        all_data[key] = all_data[key].replace('y', pl.Series(points[key].T[1]))
+        all_data[key] = all_data[key].replace('x', pl.Series(points[key].T[0])) # type: ignore
+        all_data[key] = all_data[key].replace('y', pl.Series(points[key].T[1])) # type: ignore
 
     all_data = pl.concat(list(all_data.values()))
     return all_data
@@ -239,7 +250,7 @@ def get_posititions(debug: bool=False):
 
         ax.set_xlim(-0.2,0.2)
         ax.set_ylim(-0.2,0.2)
-        ax.set_zlim(-0.2,0.2)
+        ax.set_zlim(-0.2,0.2) # type: ignore
         plt.show(block=True)
 
     all_detectors = pl.concat([detectors, reference])
@@ -532,10 +543,11 @@ def rm_snirfs():
 
 
 if __name__ =="__main__":
+    parse_config()
     # analyze_linearity(Path('fnirs-pilot-data/allison_no_eyetracking'))
     # get_avg_sampling_rate()
     # analyze_interpolation(Path('fnirs-pilot-data/alex_no_eyetracking'))
+        
     rm_snirfs()
-    bulk_convert(True)
+    bulk_convert(False)
     get_snirfs()
-    # test()
